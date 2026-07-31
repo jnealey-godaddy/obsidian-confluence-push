@@ -39,7 +39,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # main.js, manifest.json and styles.css are what Obsidian needs.
+          # cli.js and confluence-push are the optional terminal front end,
+          # which lives in the same folder.
           gh release create "${GITHUB_REF_NAME}" \
             --title "${GITHUB_REF_NAME}" \
             --generate-notes \
-            main.js manifest.json styles.css
+            main.js manifest.json styles.css cli.js confluence-push

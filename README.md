@@ -1,5 +1,7 @@
 # Confluence Push
 
+[![CI](https://github.com/jnealey-godaddy/obsidian-confluence-push/actions/workflows/ci.yml/badge.svg)](https://github.com/jnealey-godaddy/obsidian-confluence-push/actions/workflows/ci.yml)
+
 Publish Obsidian notes to Confluence Cloud. Write in Obsidian, push to Confluence for your team to read.
 
 Notes are converted to Confluence **storage format**, the XHTML Confluence stores natively, so pages arrive as real Confluence content with working tables, code macros, task lists and panels. Not Markdown pasted into a code block.
@@ -14,7 +16,17 @@ Not in the community catalogue yet, so install it manually:
 2. Put them in `<your vault>/.obsidian/plugins/confluence-push/`.
 3. In Obsidian, go to **Settings > Community plugins**, hit the reload button next to "Installed plugins", and enable **Confluence Push**.
 
-Or build from source: `npm install && npm run build`, then copy the folder into `.obsidian/plugins/`.
+For the [terminal front end](#from-a-terminal), also grab `cli.js` and `confluence-push` from the same release and put them in that folder. `chmod +x confluence-push` after downloading.
+
+To build from source instead:
+
+```bash
+git clone https://github.com/jnealey-godaddy/obsidian-confluence-push.git
+cd obsidian-confluence-push
+npm install && npm run build
+```
+
+That produces `main.js` and `cli.js`, which are not tracked in the repo. Copy the folder into `.obsidian/plugins/`.
 
 ## Setup
 

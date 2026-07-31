@@ -4,5 +4,10 @@ node_modules/
 # note. Never commit it.
 data.json
 
+# Build output. Produced by `npm run build` and attached to releases, so it is
+# not tracked here and cannot drift from the source it came from.
+main.js
+cli.js
+
 *.log
 .DS_Store
