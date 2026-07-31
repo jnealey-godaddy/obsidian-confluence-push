@@ -1,0 +1,10 @@
+{
+  "id": "confluence-push",
+  "name": "Confluence Push",
+  "version": "1.0.0",
+  "minAppVersion": "1.4.0",
+  "description": "Publish vault notes to Confluence Cloud. One-way push with attachment upload, wikilink resolution, and conflict detection.",
+  "author": "Nealey",
+  "authorUrl": "https://github.com/jnealey-godaddy",
+  "isDesktopOnly": false
+}

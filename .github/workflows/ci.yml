@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # The converter tests validate every generated fragment as XML, because
+      # a single malformed tag makes Confluence reject the whole page.
+      - name: Install xmllint
+        run: sudo apt-get update && sudo apt-get install -y libxml2-utils
+
+      - run: npm ci
+      - run: npm run build
+      - run: npm test

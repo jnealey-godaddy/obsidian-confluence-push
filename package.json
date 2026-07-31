@@ -1,0 +1,38 @@
+{
+  "name": "obsidian-confluence-push",
+  "version": "1.0.0",
+  "description": "One-way publish from Obsidian to Confluence Cloud",
+  "main": "main.js",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+    "test": "node --test test/*.test.mjs"
+  },
+  "keywords": [
+    "obsidian",
+    "confluence",
+    "atlassian",
+    "publish"
+  ],
+  "author": "Nealey",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jnealey-godaddy/obsidian-confluence-push.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jnealey-godaddy/obsidian-confluence-push/issues"
+  },
+  "homepage": "https://github.com/jnealey-godaddy/obsidian-confluence-push#readme",
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "builtin-modules": "^3.3.0",
+    "esbuild": "^0.19.11",
+    "obsidian": "latest",
+    "tslib": "^2.6.2",
+    "typescript": "^5.3.3"
+  },
+  "dependencies": {
+    "marked": "^12.0.2"
+  }
+}

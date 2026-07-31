@@ -1,0 +1,20 @@
+#!/bin/sh
+# Wrapper so `confluence-push` works from any shell, including the
+# non-interactive ones agents and hooks run in, where a Node installed under
+# nvm is not on PATH.
+set -e
+
+DIR=$(cd "$(dirname "$0")" && pwd)
+
+if command -v node >/dev/null 2>&1; then
+	NODE=node
+else
+	NODE=$(ls -d "$HOME"/.nvm/versions/node/*/bin/node 2>/dev/null | sort -V | tail -1)
+fi
+
+if [ -z "$NODE" ]; then
+	echo "confluence-push: no node executable found." >&2
+	exit 1
+fi
+
+exec "$NODE" "$DIR/cli.js" "$@"

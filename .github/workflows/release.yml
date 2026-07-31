@@ -1,0 +1,45 @@
+name: Release
+
+# Tag a version to publish it, e.g. `git tag 1.0.1 && git push origin 1.0.1`.
+# The tag must match the version in manifest.json, which is what Obsidian reads.
+on:
+  push:
+    tags: ["*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install xmllint
+        run: sudo apt-get update && sudo apt-get install -y libxml2-utils
+
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+
+      - name: Check the tag matches manifest.json
+        run: |
+          MANIFEST=$(node -p "require('./manifest.json').version")
+          if [ "$MANIFEST" != "${GITHUB_REF_NAME}" ]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match manifest.json version $MANIFEST" >&2
+            exit 1
+          fi
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            main.js manifest.json styles.css

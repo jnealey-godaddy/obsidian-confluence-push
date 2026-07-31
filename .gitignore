@@ -1,0 +1,8 @@
+node_modules/
+
+# Holds the Atlassian API token in plain text, plus a record of every published
+# note. Never commit it.
+data.json
+
+*.log
+.DS_Store
