@@ -56,12 +56,16 @@ Use an API token scoped to an account that only has access to the spaces you int
 | Command | What it does |
 |---|---|
 | Push current note to Confluence | Creates or updates the page for the active note |
-| Push current note (overwrite remote changes) | Same, but skips the conflict prompt and the unchanged check |
+| Push current note to Confluence (overwrite remote changes) | Same, but skips the conflict prompt and the unchanged check |
 | Push all published notes to Confluence | Re-pushes every note that already has a page, skipping unchanged ones |
 | Preview Confluence storage format for current note | Shows the generated markup and any conversion warnings without publishing |
+| Pull Confluence version of current note for review | Saves what Confluence holds as a copy beside the note and opens it |
+| Pull Confluence version over current note | Replaces the note's body with what Confluence holds, after confirming |
 | Open Confluence page for current note | Opens the published page in a browser |
 
-There is also a ribbon icon and a **Push to Confluence** item in the file context menu.
+The last three appear only for a note that has already been published.
+
+There is also a ribbon icon, and a file context menu carrying **Push to Confluence**, plus **Pull from Confluence (overwrite)** and **Open in Confluence** once the note has a page.
 
 ## From a terminal
 
@@ -77,7 +81,7 @@ Run it from the vault root. The wrapper finds Node on its own, including one ins
 |---|---|
 | `push <note>...` | Create or update the page for each note |
 | `push --all` | Push every note that already has a page |
-| `move <note>...` | Refile pages under a new parent, leaving content untouched |
+| `move <note>...` / `move --all` | Refile pages under a new parent, leaving content untouched |
 | `status [<note>...]` | What each note is bound to, and whether it has drifted |
 | `pull <note>...` / `pull --all` | Save what Confluence holds as a review copy beside each note |
 | `pull <note>... --in-place` | Write what Confluence holds over each note's body |
@@ -87,7 +91,11 @@ Run it from the vault root. The wrapper finds Node on its own, including one ins
 
 Options are `--force`, `--parent <id|url>`, `--dry-run`, `--json`, `--all` and `--in-place`.
 
-`--all` means "every note that already has a page", and it is always explicit: `push`, `move` and `pull` each either take the notes by name or take `--all`, never both and never neither. `--force` only ever means "go ahead anyway": skip a confirmation, or act on a page that has not changed.
+`--all` means "every note that already has a page". Every command that acts on more than one note wants either the notes by name or `--all`, and says so rather than guessing: none of them treat "no arguments" as "the whole vault". `--force` only ever means "go ahead anyway": skip a confirmation, or act on a page that has not changed.
+
+`pull` rejects `--all` and named notes together. `push` and `move` currently take `--all` as the answer and ignore the names.
+
+`--json` prints per-note results as an array, which is what to parse in a script. A note that failed appears in that array with its error rather than stopping the run; an invocation that never got started, a bad flag or a missing note, prints a plain message to stderr and exits non-zero instead.
 
 The overwrite prompts have no screen to open on, so the CLI declines them and prints the reason. That makes `cancelled` the normal outcome for a page this vault has not published before; re-run with `--force` once you have looked at the page.
 
@@ -99,6 +107,7 @@ The overwrite prompts have no screen to open on, so the CLI declines them and pr
 - **Space** comes from the `confluenceSpace` property, falling back to the default space in settings.
 - **Parent** comes from the `confluenceParent` property (page ID or URL), falling back to the default parent in settings. A parent named on the note also **moves** an already-published page; the settings default only applies to pages being created, so it can never drag an existing page somewhere it was not meant to go.
 - **Frontmatter itself is never published.** It is metadata for the vault.
+- Only the URL property is renamable, under **Frontmatter property** in settings. `confluenceSpace` and `confluenceParent` are fixed names.
 - After a successful push, the page URL is written back to the `confluence` property. The page ID is deliberately the last segment of that URL, so anything else reading your notes can take the ID off the end. Confluence's own links end with a slug of the title instead.
 
 On the first push of a note, if a page with the same title already exists in the space, you are asked whether to adopt and replace it rather than create a duplicate. Adopting overwrites a page this vault has never published, so its current content is not backed up locally. If more than one page in the space shares the title, the prompt says so.
@@ -204,7 +213,7 @@ Renaming or moving a note keeps its link to the page.
 npm install
 npm run dev     # watch build
 npm run build   # typecheck, then bundle both main.js and cli.js
-npm test        # 131 tests, needs xmllint on PATH
+npm test        # 152 tests, needs xmllint on PATH
 ```
 
 The test suite runs the converter and API client outside Obsidian, using a stub for the Obsidian API. Converter output is validated as XML with `xmllint`, which is what catches the malformed-markup failures that make Confluence reject a page.
