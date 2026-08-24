@@ -1,7 +1,7 @@
 {
   "id": "confluence-push",
   "name": "Confluence Push",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "minAppVersion": "1.4.0",
   "description": "Publish vault notes to Confluence Cloud. One-way push with attachment upload, wikilink resolution, and conflict detection.",
   "author": "Nealey",

@@ -91,9 +91,11 @@ Run it from the vault root. The wrapper finds Node on its own, including one ins
 
 Options are `--force`, `--parent <id|url>`, `--dry-run`, `--json`, `--all` and `--in-place`.
 
-`--all` means "every note that already has a page". Every command that acts on more than one note wants either the notes by name or `--all`, and says so rather than guessing: none of them treat "no arguments" as "the whole vault". `--force` only ever means "go ahead anyway": skip a confirmation, or act on a page that has not changed.
+`--all` means "every note that already has a page". `push`, `move` and `pull` each want either the notes by name or `--all`, never both and never neither. Asking both ways is refused rather than settled by precedence, since preferring one would act on the whole vault when three notes were meant, or the reverse. None of them read "no arguments" as "everything you have".
 
-`pull` rejects `--all` and named notes together. `push` and `move` currently take `--all` as the answer and ignore the names.
+`status` is the exception, because it only reads: with no notes named it reports on all of them.
+
+`--force` only ever means "go ahead anyway": skip a confirmation, or act on a page that has not changed.
 
 `--json` prints per-note results as an array, which is what to parse in a script. A note that failed appears in that array with its error rather than stopping the run; an invocation that never got started, a bad flag or a missing note, prints a plain message to stderr and exits non-zero instead.
 

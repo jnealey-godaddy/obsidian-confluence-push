@@ -274,6 +274,30 @@ async function assertOnePageEach(vault: NodeVault, data: PluginData, files: Vaul
 }
 
 /** Every note already bound to a page, by sync state or by frontmatter. */
+/**
+ * The notes a batch command should act on.
+ *
+ * `--all` and a list of names are two answers to the same question, so being
+ * given both is a mistake worth reporting rather than resolving by precedence:
+ * quietly preferring one would act on the whole vault when three notes were
+ * meant, or the reverse. Neither is refused too, so no command treats "no
+ * arguments" as "everything you have".
+ */
+async function selectNotes(
+	vault: NodeVault,
+	data: PluginData,
+	args: Args,
+	verb: string
+): Promise<VaultFile[]> {
+	if (args.all && args.positional.length) {
+		fail(`--all acts on every published note, so naming notes as well asks for two different things.`);
+	}
+	if (!args.all && !args.positional.length) {
+		fail(`Name at least one note to ${verb}, or pass --all for every published note.`);
+	}
+	return args.all ? await publishedNotes(vault, data) : resolveNotes(vault, args.positional);
+}
+
 async function publishedNotes(vault: NodeVault, data: PluginData): Promise<VaultFile[]> {
 	const published: VaultFile[] = [];
 	for (const file of vault.markdownFiles()) {
@@ -323,13 +347,8 @@ async function commandPush(args: Args): Promise<void> {
 	}
 
 	const vault = await openVault();
-	const files = args.all
-		? await publishedNotes(vault, data)
-		: resolveNotes(vault, args.positional);
-
-	if (!files.length) {
-		fail(args.all ? "No published notes found." : "Name at least one note to push.");
-	}
+	const files = await selectNotes(vault, data, args, "push");
+	if (!files.length) fail("No published notes found.");
 	await assertOnePageEach(vault, data, files);
 
 	if (args.dryRun) {
@@ -473,8 +492,8 @@ async function commandMove(args: Args): Promise<void> {
 	const override = args.parent ? pageIdFromUrl(args.parent) : null;
 	if (args.parent && !override) fail(`Could not read a page id from --parent "${args.parent}".`);
 
-	const files = args.all ? await publishedNotes(vault, data) : resolveNotes(vault, args.positional);
-	if (!files.length) fail(args.all ? "No published notes found." : "Name at least one note to move.");
+	const files = await selectNotes(vault, data, args, "move");
+	if (!files.length) fail("No published notes found.");
 	await assertOnePageEach(vault, data, files);
 
 	let moved = 0;
@@ -653,16 +672,7 @@ async function commandPull(args: Args): Promise<void> {
 	const client = clientFor(data.settings);
 	const pulledAt = new Date().toISOString();
 
-	// --all selects the whole vault, the same way it does for push and move.
-	// Sweeping on an empty argument list instead would mean the widest version of
-	// this command is the one you get by typing the least.
 	const sweeping = args.all;
-	if (!sweeping && !args.positional.length) {
-		fail("Name at least one note to pull, or pass --all for every published note.");
-	}
-	if (sweeping && args.positional.length) {
-		fail("--all pulls every published note, so naming notes as well asks for two different things.");
-	}
 	// Sweeping in place rewrites the body of every drifted note in the vault in one
 	// unattended pass, with no copy of what was there before. --all says which notes,
 	// --force says you accept losing what is in them.
@@ -672,9 +682,9 @@ async function commandPull(args: Args): Promise<void> {
 				"in place, or pass --force alongside --all if you really mean the whole vault."
 		);
 	}
-	const files = (
-		sweeping ? await publishedNotes(vault, data) : resolveNotes(vault, args.positional)
-	).filter((file) => !isSidecarPath(file.path));
+	const files = (await selectNotes(vault, data, args, "pull")).filter(
+		(file) => !isSidecarPath(file.path)
+	);
 
 	if (!files.length) fail("No published notes found.");
 
