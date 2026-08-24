@@ -479,7 +479,12 @@ export class StorageConverter {
 			return a ? ` style="text-align: ${a};"` : "";
 		};
 
-		let out = "<table><tbody><tr>";
+		// Confluence renders tables at the text column width unless a layout is
+		// declared. Wide tables read badly there, so anything from four columns
+		// up breaks out to the full page.
+		const layout = token.header.length >= 4 ? ' data-layout="full-width"' : "";
+
+		let out = `<table${layout}><tbody><tr>`;
 		token.header.forEach((cell, i) => {
 			out += `<th${alignStyle(i)}><p>${this.renderInline(cell.tokens)}</p></th>`;
 		});

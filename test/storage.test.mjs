@@ -175,6 +175,14 @@ describe("blocks", () => {
 		assert.match(storage, /<th style="text-align: right;"><p>Value<\/p><\/th>/);
 		assert.match(storage, /<td style="text-align: left;"><p>MAU<\/p><\/td>/);
 		assertWellFormed(storage, "table");
+		assert.doesNotMatch(storage, /data-layout/);
+	});
+
+	test("gives four-column and wider tables a full-width layout", () => {
+		const md = "| A | B | C | D |\n|---|---|---|---|\n| 1 | 2 | 3 | 4 |";
+		const { storage } = convert(md);
+		assert.match(storage, /<table data-layout="full-width"><tbody>/);
+		assertWellFormed(storage, "wide table");
 	});
 
 	test("renders nested lists", () => {
