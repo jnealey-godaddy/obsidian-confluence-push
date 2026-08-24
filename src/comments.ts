@@ -139,9 +139,16 @@ function findBlocks(markup: string): Block[] {
 		if (end < 0) continue;
 		found.push({ start, end });
 	}
-	return found.filter(
-		(block) => !found.some((other) => other !== block && other.start >= block.start && other.end <= block.end)
-	);
+	// Matched tags nest, so the blocks form a laminar family: any two are either
+	// nested or disjoint, never partly overlapping. Sorted outermost-first, a
+	// block's children are exactly the entries that follow it, so a block is
+	// innermost when its immediate successor is not inside it. That replaces a
+	// pairwise containment scan which went quadratic on a page with many cells.
+	found.sort((a, b) => a.start - b.start || b.end - a.end);
+	return found.filter((block, i) => {
+		const next = found[i + 1];
+		return !next || !(next.start >= block.start && next.end <= block.end);
+	});
 }
 
 /** Removes every inline comment marker, keeping the text it wrapped. */
@@ -166,6 +173,13 @@ export function stripMarkers(storage: string): string {
 export function extractAnchors(storage: string): AnchoredComment[] {
 	const anchors: AnchoredComment[] = [];
 
+	// None of this depends on which marker is being read, so it is computed once
+	// for the page rather than once per comment. Recomputing it per marker made
+	// the cost of reading a page's comments grow with comments times blocks.
+	const clean = stripMarkers(storage);
+	const blocks = findBlocks(clean);
+	const blockTexts = blocks.map((b) => mapText(clean.slice(b.start, b.end)).text);
+
 	for (const pattern of MARKER_PATTERNS) {
 		const scan = new RegExp(pattern.source, pattern.flags);
 		let m: RegExpExecArray | null;
@@ -179,22 +193,21 @@ export function extractAnchors(storage: string): AnchoredComment[] {
 			// Re-read the surroundings with markers removed so offsets line up
 			// with the markup this will later be applied to.
 			const before = stripMarkers(storage.slice(0, m.index));
-			const clean = stripMarkers(storage);
-			const block = findBlocks(clean).find(
+			const at = blocks.findIndex(
 				(b) => b.start <= before.length && b.end >= before.length
 			);
-			if (!block) continue;
-
-			const blockMap = mapText(clean.slice(block.start, block.end));
-			const blockText = blockMap.text;
+			if (at < 0) continue;
+			const block = blocks[at];
+			const blockText = blockTexts[at];
 
 			// Where the selection starts, measured in the block's plain text.
 			const offsetInBlock = mapText(clean.slice(block.start, before.length)).text.length;
 			const occurrence = countOccurrences(blockText.slice(0, offsetInBlock), selection);
 
-			const blockIndex = findBlocks(clean)
-				.filter((b) => mapText(clean.slice(b.start, b.end)).text === blockText)
-				.findIndex((b) => b.start === block.start);
+			// Which of the blocks reading the same text this one is, so an anchor
+			// still lands correctly when a page repeats a line verbatim.
+			let blockIndex = 0;
+			for (let i = 0; i < at; i++) if (blockTexts[i] === blockText) blockIndex++;
 
 			anchors.push({ markerRef, selection, blockText, blockIndex, occurrence });
 		}

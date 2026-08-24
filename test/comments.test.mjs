@@ -155,3 +155,47 @@ describe("carrying anchors onto new content", () => {
 		assert.equal(second.storage, first.storage);
 	});
 });
+
+describe("anchoring inside tables", () => {
+	const cell = (text) => `<td><p>${text}</p></td>`;
+	const bigTable = (markedCellIndex, ref, text) => {
+		const rows = [];
+		for (let r = 0; r < 60; r++) {
+			const cells = [];
+			for (let c = 0; c < 4; c++) {
+				const i = r * 4 + c;
+				cells.push(i === markedCellIndex ? `<td><p>${marker(ref, text)}</p></td>` : cell(`r${r}c${c}`));
+			}
+			rows.push(`<tr>${cells.join("")}</tr>`);
+		}
+		return `<table><tbody>${rows.join("")}</tbody></table>`;
+	};
+
+	test("anchors to the innermost cell, not the row or table", () => {
+		const [anchor] = extractAnchors(bigTable(90, "abc", "Elementor"));
+		assert.equal(anchor.markerRef, "abc");
+		assert.equal(anchor.selection, "Elementor");
+		// The paragraph inside the cell is the innermost block, so that is the
+		// text recorded, not the whole row and not the whole table.
+		assert.equal(anchor.blockText, "Elementor");
+	});
+
+	test("re-anchors onto the same cell of a rebuilt table", () => {
+		const anchors = extractAnchors(bigTable(90, "abc", "Elementor"));
+		const fresh = bigTable(-1, "", "").replace("<td><p>r22c2</p></td>", "<td><p>Elementor</p></td>");
+		const result = reanchorComments(fresh, anchors);
+		assert.equal(result.reanchored.length, 1);
+		assert.deepEqual(result.lost, []);
+		assert.match(result.storage, /<td><p><ac:inline-comment-marker ac:ref="abc">Elementor<\/ac:inline-comment-marker><\/p><\/td>/);
+	});
+
+	test("reads a wide table's comments in reasonable time", () => {
+		// Guards the block scan against going quadratic in table cells: this page
+		// has 240 cells, which a pairwise containment check made expensive.
+		const started = process.hrtime.bigint();
+		const anchors = extractAnchors(bigTable(90, "abc", "Elementor"));
+		const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
+		assert.equal(anchors.length, 1);
+		assert.ok(elapsedMs < 500, `took ${elapsedMs.toFixed(0)}ms`);
+	});
+});
