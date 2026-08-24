@@ -44,7 +44,8 @@ Usage:
   confluence-push move <note>... [--parent <id|url>] [--dry-run]
   confluence-push move --all [--dry-run]
   confluence-push status [<note>...]
-  confluence-push pull [<note>...] [--all] [--force] [--dry-run]
+  confluence-push pull <note>... [--force] [--dry-run]
+  confluence-push pull --all [--force] [--dry-run]
   confluence-push pull <note>... --in-place [--force] [--dry-run]
   confluence-push pull <note> --stdout
   confluence-push preview <note>
@@ -64,6 +65,7 @@ Options:
   --all        Act on every note that already has a page.
   --force      Overwrite remote content without asking, and ignore the unchanged check.
                With pull, write a review copy even for a page that has not changed.
+               With pull --all --in-place, confirm overwriting every published note.
   --parent     Parent page or folder for notes that do not name one themselves.
   --dry-run    Report what would happen without changing anything.
   --stdout     With pull, print the page instead of writing a review copy.
@@ -77,8 +79,8 @@ Read it, copy across what you want, delete it.
 pull --in-place skips that step and writes the page straight over the note's
 body, keeping its frontmatter. Use it once you have decided the Confluence
 version wins: the note keeps Confluence's rendering, absolute links and panels
-included, and pushing afterwards sends that back. It needs the notes named, so
---all --in-place is refused unless you also pass --force.
+included, and pushing afterwards sends that back. Sweeping the whole vault that
+way is refused unless you pass --all and --force together.
 
 A note names its own page title, space and parent through the title,
 confluenceSpace and confluenceParent frontmatter properties. The published URL
@@ -172,6 +174,34 @@ async function writeSyncState(sync: Record<string, SyncRecord>): Promise<void> {
 	}
 	raw.sync = merged;
 	await fs.writeFile(DATA_FILE, JSON.stringify(raw, null, 2) + "\n", "utf8");
+}
+
+/**
+ * Coalesces the per-note sync-state writes a push batch would otherwise make.
+ *
+ * `Pusher` persists after every note so a note that failed cannot erase the
+ * record of one that succeeded. That is the right instinct, but the whole file
+ * is rewritten each time, so a sweep over a large vault rewrites a file that
+ * grows with the vault once per note. Marking the state dirty and flushing once
+ * keeps the write count linear. The batch loops catch their own per-note errors
+ * and flush in a `finally`, so the state still reaches disk on the failure paths
+ * the per-note write was protecting.
+ */
+function coalescedPersist(write: () => Promise<void>): {
+	mark: () => Promise<void>;
+	flush: () => Promise<void>;
+} {
+	let dirty = false;
+	return {
+		mark: async () => {
+			dirty = true;
+		},
+		flush: async () => {
+			if (!dirty) return;
+			dirty = false;
+			await write();
+		},
+	};
 }
 
 /** Obsidian's own exclusions, so the CLI indexes the same notes the app does. */
@@ -321,36 +351,41 @@ async function commandPush(args: Args): Promise<void> {
 
 	const client = clientFor(data.settings);
 	const reasons = installPromptPolicy();
+	const state = coalescedPersist(() => writeSyncState(data.sync));
 	const pusher = new Pusher(
 		vault.asApp() as App,
 		client,
 		data.settings,
 		data.sync,
-		() => writeSyncState(data.sync)
+		state.mark
 	);
 
 	const reports: PushReport[] = [];
-	for (const file of files) {
-		reasons.length = 0;
-		try {
-			const result = await pusher.push(asObsidianFile(file), { force: args.force });
-			reports.push({
-				note: file.path,
-				outcome: result.outcome,
-				url: result.url,
-				warnings: result.outcome === "cancelled" ? [...reasons] : result.warnings,
-				attachments: result.attachmentsUploaded,
-			});
-		} catch (err) {
-			reports.push({
-				note: file.path,
-				outcome: "failed",
-				url: null,
-				warnings: [],
-				attachments: 0,
-				error: (err as Error).message,
-			});
+	try {
+		for (const file of files) {
+			reasons.length = 0;
+			try {
+				const result = await pusher.push(asObsidianFile(file), { force: args.force });
+				reports.push({
+					note: file.path,
+					outcome: result.outcome,
+					url: result.url,
+					warnings: result.outcome === "cancelled" ? [...reasons] : result.warnings,
+					attachments: result.attachmentsUploaded,
+				});
+			} catch (err) {
+				reports.push({
+					note: file.path,
+					outcome: "failed",
+					url: null,
+					warnings: [],
+					attachments: 0,
+					error: (err as Error).message,
+				});
+			}
 		}
+	} finally {
+		await state.flush();
 	}
 
 	if (args.json) {
@@ -611,98 +646,129 @@ async function commandPullToStdout(args: Args): Promise<void> {
  * that decision is already made and the Confluence version wins outright.
  */
 async function commandPull(args: Args): Promise<void> {
-	if (args.stdout) return commandPullToStdout(args);
 	if (args.inPlace && args.stdout) fail("--in-place and --stdout ask for different things.");
+	if (args.stdout) return commandPullToStdout(args);
 	const data = await readPluginData();
 	const vault = await openVault();
 	const client = clientFor(data.settings);
 	const pulledAt = new Date().toISOString();
 
-	const sweeping = !args.positional.length;
-	// Sweeping in place would rewrite the body of every drifted note in the vault
-	// in one unattended pass, with no copy of what was there before. Naming the
-	// notes is the confirmation.
+	// --all selects the whole vault, the same way it does for push and move.
+	// Sweeping on an empty argument list instead would mean the widest version of
+	// this command is the one you get by typing the least.
+	const sweeping = args.all;
+	if (!sweeping && !args.positional.length) {
+		fail("Name at least one note to pull, or pass --all for every published note.");
+	}
+	if (sweeping && args.positional.length) {
+		fail("--all pulls every published note, so naming notes as well asks for two different things.");
+	}
+	// Sweeping in place rewrites the body of every drifted note in the vault in one
+	// unattended pass, with no copy of what was there before. --all says which notes,
+	// --force says you accept losing what is in them.
 	if (sweeping && args.inPlace && !args.force) {
 		fail(
 			"Refusing to overwrite every published note at once. Name the notes to pull " +
-				"in place, or pass --force if you really mean the whole vault."
+				"in place, or pass --force alongside --all if you really mean the whole vault."
 		);
 	}
 	const files = (
 		sweeping ? await publishedNotes(vault, data) : resolveNotes(vault, args.positional)
 	).filter((file) => !isSidecarPath(file.path));
 
-	if (!files.length) fail(sweeping ? "No published notes found." : "Name at least one note.");
+	if (!files.length) fail("No published notes found.");
 
 	const outcomes: PullOutcome[] = [];
-	/** Records whose drift an in-place write has settled. */
-	const reconciled: Record<string, SyncRecord> = {};
 	for (const file of files) {
 		const record = data.sync[file.path];
-		const url = (await vault.frontmatter(file))[data.settings.frontmatterProperty];
-		const pageId = record?.pageId ?? (typeof url === "string" ? pageIdFromUrl(url) : null);
-		const lastPushedVersion = record?.lastPushedVersion ?? null;
+		try {
+			const url = (await vault.frontmatter(file))[data.settings.frontmatterProperty];
+			const pageId = record?.pageId ?? (typeof url === "string" ? pageIdFromUrl(url) : null);
+			const lastPushedVersion = record?.lastPushedVersion ?? null;
 
-		const remote = pageId ? await client.getPageMarkdown(pageId) : null;
-		const state = pullState({
-			pageId,
-			remoteExists: remote !== null,
-			remoteVersion: remote?.version ?? null,
-			lastPushedVersion,
-		});
+			const remote = pageId ? await client.getPageMarkdown(pageId) : null;
+			const state = pullState({
+				pageId,
+				remoteExists: remote !== null,
+				remoteVersion: remote?.version ?? null,
+				lastPushedVersion,
+			});
 
-		const outcome: PullOutcome = {
-			notePath: file.path,
-			state,
-			pageId,
-			remoteVersion: remote?.version ?? null,
-			lastPushedVersion,
-			sidecarPath: null,
-			inPlace: false,
-			url: pageId
-				? client.pageUrl(record?.spaceKey ?? data.settings.defaultSpaceKey, pageId)
-				: null,
-		};
+			const outcome: PullOutcome = {
+				notePath: file.path,
+				state,
+				pageId,
+				remoteVersion: remote?.version ?? null,
+				lastPushedVersion,
+				sidecarPath: null,
+				inPlace: false,
+				error: null,
+				url: pageId
+					? client.pageUrl(record?.spaceKey ?? data.settings.defaultSpaceKey, pageId)
+					: null,
+			};
 
-		if (remote && (shouldPull(state, { sweeping }) || args.force)) {
-			if (args.inPlace) {
-				outcome.inPlace = true;
-				if (!args.dryRun) {
-					const notePath = path.join(VAULT_ROOT, file.path);
-					const existing = await fs.readFile(notePath, "utf8");
-					await fs.writeFile(notePath, inPlaceContents({ existing, remote }), "utf8");
-					// The note now holds what Confluence holds, so the drift is settled
-					// and should stop being reported. contentHash is left alone on
-					// purpose: this body renders to different markup than the one last
-					// pushed, and stamping the hash would make the next push skip as a
-					// no-op and leave the page stale. Untracked notes gain no record,
-					// because a pull learns nothing about what was last pushed.
-					if (record) {
-						reconciled[file.path] = { ...record, lastPushedVersion: remote.version };
+			if (remote && (shouldPull(state, { sweeping }) || args.force)) {
+				if (args.inPlace) {
+					outcome.inPlace = true;
+					if (!args.dryRun) {
+						const notePath = path.join(VAULT_ROOT, file.path);
+						const existing = await fs.readFile(notePath, "utf8");
+						await fs.writeFile(notePath, inPlaceContents({ existing, remote }), "utf8");
+						// The note now holds what Confluence holds, so the drift is settled
+						// and should stop being reported. contentHash is left alone on
+						// purpose: this body renders to different markup than the one last
+						// pushed, and stamping the hash would make the next push skip as a
+						// no-op and leave the page stale. Untracked notes gain no record,
+						// because a pull learns nothing about what was last pushed.
+						//
+						// Written per note rather than batched at the end, so a later note
+						// failing cannot erase the bookkeeping for one already overwritten:
+						// the file on disk and the record describing it move together.
+						if (record) {
+							await writeSyncState({
+								[file.path]: { ...record, lastPushedVersion: remote.version },
+							});
+						}
+					}
+				} else {
+					outcome.sidecarPath = sidecarPathFor(file.path);
+					if (!args.dryRun) {
+						await fs.writeFile(
+							path.join(VAULT_ROOT, outcome.sidecarPath),
+							sidecarContents({
+								remote,
+								notePath: file.path,
+								url: outcome.url ?? "",
+								lastPushedVersion,
+								pulledAt,
+							}),
+							"utf8"
+						);
 					}
 				}
-			} else {
-				outcome.sidecarPath = sidecarPathFor(file.path);
-				if (!args.dryRun) {
-					await fs.writeFile(
-						path.join(VAULT_ROOT, outcome.sidecarPath),
-						sidecarContents({
-							remote,
-							notePath: file.path,
-							url: outcome.url ?? "",
-							lastPushedVersion,
-							pulledAt,
-						}),
-						"utf8"
-					);
-				}
 			}
-		}
 
-		outcomes.push(outcome);
+			outcomes.push(outcome);
+		} catch (err) {
+			// One unreachable page or unreadable file should not abandon the notes
+			// still queued behind it, the same way a failed push does not.
+			outcomes.push({
+				notePath: file.path,
+				state: "failed",
+				pageId: record?.pageId ?? null,
+				remoteVersion: null,
+				lastPushedVersion: record?.lastPushedVersion ?? null,
+				sidecarPath: null,
+				inPlace: false,
+				error: err instanceof Error ? err.message : String(err),
+				url: null,
+			});
+		}
 	}
 
-	if (Object.keys(reconciled).length) await writeSyncState(reconciled);
+	const failed = outcomes.filter((o) => o.error).length;
+	if (failed) process.exitCode = 1;
 
 	if (args.json) {
 		process.stdout.write(JSON.stringify(outcomes, null, 2) + "\n");
@@ -711,6 +777,11 @@ async function commandPull(args: Args): Promise<void> {
 
 	let written = 0;
 	for (const outcome of outcomes) {
+		if (outcome.error) {
+			process.stdout.write(`${"failed".padEnd(14)} ${outcome.notePath}\n`);
+			process.stdout.write(`${" ".repeat(14)} ! ${outcome.error}\n`);
+			continue;
+		}
 		const versions =
 			outcome.remoteVersion === null
 				? ""
@@ -741,6 +812,7 @@ async function commandPull(args: Args): Promise<void> {
 				`to compare them against. Pull one by name to see what Confluence holds.\n`
 		);
 	}
+	if (failed) process.stdout.write(`${failed} failed\n`);
 }
 
 function renderTree(nodes: ConfluenceNode[], rootId: string, rootTitle: string): string {

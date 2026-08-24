@@ -56,23 +56,30 @@ describe("deciding what has drifted", () => {
 	});
 
 	test("a drifted page is always worth copying down", () => {
-		assert.equal(pull.shouldWriteSidecar("drifted", { sweeping: true }), true);
-		assert.equal(pull.shouldWriteSidecar("drifted", { sweeping: false }), true);
+		assert.equal(pull.shouldPull("drifted", { sweeping: true }), true);
+		assert.equal(pull.shouldPull("drifted", { sweeping: false }), true);
 	});
 
 	test("an untracked page is copied when asked for by name, not when sweeping", () => {
 		// This vault has 119 notes published before it kept records. Sweeping
 		// would bury the pages that changed under a copy of every page that
 		// merely has no baseline.
-		assert.equal(pull.shouldWriteSidecar("untracked", { sweeping: false }), true);
-		assert.equal(pull.shouldWriteSidecar("untracked", { sweeping: true }), false);
+		assert.equal(pull.shouldPull("untracked", { sweeping: false }), true);
+		assert.equal(pull.shouldPull("untracked", { sweeping: true }), false);
 	});
 
 	test("nothing else is copied down", () => {
-		for (const state of ["in sync", "missing", "not published"]) {
-			assert.equal(pull.shouldWriteSidecar(state, { sweeping: false }), false);
-			assert.equal(pull.shouldWriteSidecar(state, { sweeping: true }), false);
+		for (const state of ["in sync", "missing", "not published", "failed"]) {
+			assert.equal(pull.shouldPull(state, { sweeping: false }), false);
+			assert.equal(pull.shouldPull(state, { sweeping: true }), false);
 		}
+	});
+
+	test("a note that could not be reached is never written over", () => {
+		// A pull that failed knows nothing about the page, so treating it as
+		// pullable would overwrite a note using content nobody fetched.
+		assert.equal(pull.shouldPull("failed", { sweeping: false }), false);
+		assert.equal(pull.shouldPull("failed", { sweeping: true }), false);
 	});
 });
 
@@ -165,6 +172,33 @@ describe("splitting a note into frontmatter and body", () => {
 	test("survives CRLF line endings", () => {
 		const { frontmatter } = pull.splitFrontmatter("---\r\ntitle: Q3\r\n---\r\nBody\r\n");
 		assert.equal(frontmatter, "---\r\ntitle: Q3\r\n---\r\n");
+	});
+
+	test("a note opening with a horizontal rule has no frontmatter", () => {
+		// Two rules at the top of a note look exactly like a delimited block until
+		// you read between them. Prose is not a property, so this is body text.
+		const contents = "---\n\nNot frontmatter, just a rule.\n\n---\n\nMore text.\n";
+		const { frontmatter, body } = pull.splitFrontmatter(contents);
+		assert.equal(frontmatter, "");
+		assert.equal(body, contents);
+	});
+
+	test("an in-place pull over such a note replaces the whole body", () => {
+		const contents = "---\n\nNot frontmatter, just a rule.\n\n---\n\nMore text.\n";
+		const out = pull.inPlaceContents({ existing: contents, remote: remote() });
+		assert.ok(!/Not frontmatter/.test(out));
+		assert.ok(!/More text/.test(out));
+		assert.equal(out, "## Answer\n\nA colleague edited this line.\n");
+	});
+
+	test("a list-valued first property still reads as frontmatter", () => {
+		const { frontmatter } = pull.splitFrontmatter("---\ntags: [a, b]\ntitle: Q3\n---\nBody\n");
+		assert.equal(frontmatter, "---\ntags: [a, b]\ntitle: Q3\n---\n");
+	});
+
+	test("a leading blank line before the first property is tolerated", () => {
+		const { frontmatter } = pull.splitFrontmatter("---\n\ntitle: Q3\n---\nBody\n");
+		assert.equal(frontmatter, "---\n\ntitle: Q3\n---\n");
 	});
 });
 

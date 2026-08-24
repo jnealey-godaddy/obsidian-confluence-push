@@ -28,7 +28,9 @@ export type PullState =
 	/** The page is at the version this vault last pushed. */
 	| "in sync"
 	/** Someone changed the page after the last push. */
-	| "drifted";
+	| "drifted"
+	/** The note could not be read or its page could not be reached. */
+	| "failed";
 
 export interface PullOutcome {
 	notePath: string;
@@ -40,6 +42,8 @@ export interface PullOutcome {
 	sidecarPath: string | null;
 	/** Whether the remote body was written over the note itself. */
 	inPlace: boolean;
+	/** Why this note could not be pulled, when it could not be. */
+	error: string | null;
 	url: string | null;
 }
 
@@ -116,14 +120,10 @@ export function sidecarContents(args: {
  * copy of every page that merely lacks a record.
  */
 export function shouldPull(state: PullState, opts: { sweeping: boolean }): boolean {
+	if (state === "failed") return false;
 	if (state === "drifted") return true;
 	if (state === "untracked") return !opts.sweeping;
 	return false;
-}
-
-/** Same question, named for the default destination. */
-export function shouldWriteSidecar(state: PullState, opts: { sweeping: boolean }): boolean {
-	return shouldPull(state, opts);
 }
 
 /**
@@ -132,11 +132,24 @@ export function shouldWriteSidecar(state: PullState, opts: { sweeping: boolean }
  * The block is returned verbatim, closing delimiter and line ending included, so
  * it can be put back exactly as it was found. Anchored at the start of the file,
  * so a `---` horizontal rule further down is body text, not a delimiter.
+ *
+ * A note can also *open* with a horizontal rule, which looks identical to an
+ * opening delimiter until you read what follows. Prose is not a property, so the
+ * block only counts as frontmatter if its first meaningful line reads like one.
+ * Otherwise the rule is body text and the note has no frontmatter, which is the
+ * safe reading: an in-place pull then replaces the whole body, rather than
+ * preserving a paragraph it mistook for metadata.
  */
 export function splitFrontmatter(contents: string): { frontmatter: string; body: string } {
 	if (!contents.startsWith("---")) return { frontmatter: "", body: contents };
 	const match = /^---\r?\n[\s\S]*?\r?\n---[ \t]*(\r?\n|$)/.exec(contents);
 	if (!match) return { frontmatter: "", body: contents };
+
+	const inner = match[0].replace(/^---\r?\n/, "").replace(/\r?\n---[ \t]*(\r?\n|$)$/, "");
+	const first = inner.split(/\r?\n/).find((line) => line.trim() !== "");
+	const looksLikeYaml = first !== undefined && /^\s*(#|-\s|[\w.$-]+\s*:)/.test(first);
+	if (!looksLikeYaml) return { frontmatter: "", body: contents };
+
 	return { frontmatter: match[0], body: contents.slice(match[0].length) };
 }
 

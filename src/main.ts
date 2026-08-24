@@ -93,7 +93,10 @@ class ConfirmOverwriteModal extends Modal {
 			this.confirmed = true;
 			this.close();
 		});
-		confirm.focus();
+		// Focus Cancel, not Overwrite. The dialog traps focus and a button fires on
+		// both Enter and Space, so focusing the destructive action would let one
+		// habitual keystroke overwrite the note before the warning above is read.
+		cancel.focus();
 	}
 
 	onClose(): void {
@@ -173,7 +176,7 @@ export default class ConfluencePushPlugin extends Plugin {
 				const file = this.app.workspace.getActiveFile();
 				if (!file || file.extension !== "md") return false;
 				if (!this.publishedUrl(file)) return false;
-				if (!checking) void this.pullActiveFile(false);
+				if (!checking) void this.pullToSidecar(file);
 				return true;
 			},
 		});
@@ -185,7 +188,7 @@ export default class ConfluencePushPlugin extends Plugin {
 				const file = this.app.workspace.getActiveFile();
 				if (!file || file.extension !== "md") return false;
 				if (!this.publishedUrl(file)) return false;
-				if (!checking) void this.pullActiveFile(true);
+				if (!checking) void this.pullOverNote(file);
 				return true;
 			},
 		});
@@ -214,6 +217,14 @@ export default class ConfluencePushPlugin extends Plugin {
 				);
 				const url = this.publishedUrl(file);
 				if (url) {
+					// Only offered for a published note: there is nothing to pull back
+					// from a note that has never been up there. It asks before writing.
+					menu.addItem((item) =>
+						item
+							.setTitle("Pull from Confluence (overwrite)")
+							.setIcon("download")
+							.onClick(() => void this.pullOverNote(file))
+					);
 					menu.addItem((item) =>
 						item
 							.setTitle("Open in Confluence")
@@ -296,13 +307,13 @@ export default class ConfluencePushPlugin extends Plugin {
 		return null;
 	}
 
-	private newPusher(): Pusher {
+	private newPusher(persist?: () => Promise<void>): Pusher {
 		return new Pusher(
 			this.app,
 			this.client,
 			this.settings,
 			this.data.sync,
-			() => this.savePluginData()
+			persist ?? (() => this.savePluginData())
 		);
 	}
 
@@ -367,25 +378,36 @@ export default class ConfluencePushPlugin extends Plugin {
 		}
 
 		const notice = new Notice(`Pushing 0/${files.length} notes...`, 0);
-		const pusher = this.newPusher();
+		// Saving after every note rewrites the whole of data.json each time, and
+		// that serialising runs on the main thread, so a long sweep would stutter
+		// the editor once per note. Mark it dirty here and save once at the end,
+		// which the finally below guarantees even if the sweep breaks partway.
+		let dirty = false;
+		const pusher = this.newPusher(async () => {
+			dirty = true;
+		});
 		let created = 0;
 		let updated = 0;
 		let skipped = 0;
 		let cancelled = 0;
 		const failures: string[] = [];
 
-		for (let i = 0; i < files.length; i++) {
-			notice.setMessage(`Pushing ${i + 1}/${files.length}: ${files[i].basename}`);
-			try {
-				const result = await pusher.push(files[i]);
-				if (result.outcome === "created") created++;
-				else if (result.outcome === "updated") updated++;
-				else if (result.outcome === "skipped") skipped++;
-				else cancelled++;
-			} catch (err) {
-				failures.push(`${files[i].basename}: ${(err as Error).message}`);
-				console.error(`[confluence-push] failed to push ${files[i].path}`, err);
+		try {
+			for (let i = 0; i < files.length; i++) {
+				notice.setMessage(`Pushing ${i + 1}/${files.length}: ${files[i].basename}`);
+				try {
+					const result = await pusher.push(files[i]);
+					if (result.outcome === "created") created++;
+					else if (result.outcome === "updated") updated++;
+					else if (result.outcome === "skipped") skipped++;
+					else cancelled++;
+				} catch (err) {
+					failures.push(`${files[i].basename}: ${(err as Error).message}`);
+					console.error(`[confluence-push] failed to push ${files[i].path}`, err);
+				}
 			}
+		} finally {
+			if (dirty) await this.savePluginData();
 		}
 
 		notice.hide();
@@ -411,9 +433,17 @@ export default class ConfluencePushPlugin extends Plugin {
 	 * review copy and deciding what to carry across stays with the reader.
 	 * In place, the reader has already decided, and is asked to confirm.
 	 */
-	private async pullActiveFile(inPlace: boolean): Promise<void> {
-		const file = this.app.workspace.getActiveFile();
-		if (!file || file.extension !== "md") return;
+	private async pullToSidecar(file: TFile): Promise<void> {
+		return this.pull(file, { inPlace: false });
+	}
+
+	private async pullOverNote(file: TFile): Promise<void> {
+		return this.pull(file, { inPlace: true });
+	}
+
+	private async pull(file: TFile, opts: { inPlace: boolean }): Promise<void> {
+		const { inPlace } = opts;
+		if (file.extension !== "md") return;
 
 		const record = this.data.sync[file.path];
 		const url = frontmatterString(this.app, file, this.settings.frontmatterProperty);
