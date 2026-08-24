@@ -24,8 +24,9 @@ import { SyncRecord } from "./types";
 import {
 	PullOutcome,
 	isSidecarPath,
+	inPlaceContents,
 	pullState,
-	shouldWriteSidecar,
+	shouldPull,
 	sidecarContents,
 	sidecarPathFor,
 } from "./pull";
@@ -44,6 +45,7 @@ Usage:
   confluence-push move --all [--dry-run]
   confluence-push status [<note>...]
   confluence-push pull [<note>...] [--all] [--force] [--dry-run]
+  confluence-push pull <note>... --in-place [--force] [--dry-run]
   confluence-push pull <note> --stdout
   confluence-push preview <note>
   confluence-push tree [<page id|url>]
@@ -65,11 +67,18 @@ Options:
   --parent     Parent page or folder for notes that do not name one themselves.
   --dry-run    Report what would happen without changing anything.
   --stdout     With pull, print the page instead of writing a review copy.
+  --in-place   With pull, write the page over the note's body instead of beside it.
   --json       Machine-readable output.
 
-pull never writes over a note. It saves what Confluence holds as a separate
-<note>.confluence.md review copy, because a page comes back rendered rather than
-as the Markdown that was pushed. Read it, copy across what you want, delete it.
+pull saves what Confluence holds as a separate <note>.confluence.md review copy,
+because a page comes back rendered rather than as the Markdown that was pushed.
+Read it, copy across what you want, delete it.
+
+pull --in-place skips that step and writes the page straight over the note's
+body, keeping its frontmatter. Use it once you have decided the Confluence
+version wins: the note keeps Confluence's rendering, absolute links and panels
+included, and pushing afterwards sends that back. It needs the notes named, so
+--all --in-place is refused unless you also pass --force.
 
 A note names its own page title, space and parent through the title,
 confluenceSpace and confluenceParent frontmatter properties. The published URL
@@ -86,6 +95,8 @@ interface Args {
 	parent: string | null;
 	/** Print a pulled page instead of writing a review copy. */
 	stdout: boolean;
+	/** Write a pulled page over the note's body instead of beside it. */
+	inPlace: boolean;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -98,6 +109,7 @@ function parseArgs(argv: string[]): Args {
 		json: false,
 		parent: null,
 		stdout: false,
+		inPlace: false,
 	};
 
 	for (let i = 1; i < argv.length; i++) {
@@ -107,6 +119,7 @@ function parseArgs(argv: string[]): Args {
 		else if (arg === "--dry-run" || arg === "-n") args.dryRun = true;
 		else if (arg === "--json") args.json = true;
 		else if (arg === "--stdout") args.stdout = true;
+		else if (arg === "--in-place") args.inPlace = true;
 		else if (arg === "--parent") args.parent = argv[++i] ?? null;
 		else if (arg.startsWith("--parent=")) args.parent = arg.slice("--parent=".length);
 		else if (arg.startsWith("-")) throw new Error(`Unknown option "${arg}".`);
@@ -590,19 +603,31 @@ async function commandPullToStdout(args: Args): Promise<void> {
 }
 
 /**
- * Brings changed pages back as review copies beside their notes.
+ * Brings changed pages back down: beside their notes for review, or with
+ * `--in-place`, over the notes themselves.
  *
- * Nothing is written over: a pull answers "what does Confluence say now", and
- * what to keep from it stays a decision for whoever reads the diff.
+ * The default answers "what does Confluence say now" and leaves what to keep
+ * from it as a decision for whoever reads the diff. `--in-place` is for when
+ * that decision is already made and the Confluence version wins outright.
  */
 async function commandPull(args: Args): Promise<void> {
 	if (args.stdout) return commandPullToStdout(args);
+	if (args.inPlace && args.stdout) fail("--in-place and --stdout ask for different things.");
 	const data = await readPluginData();
 	const vault = await openVault();
 	const client = clientFor(data.settings);
 	const pulledAt = new Date().toISOString();
 
 	const sweeping = !args.positional.length;
+	// Sweeping in place would rewrite the body of every drifted note in the vault
+	// in one unattended pass, with no copy of what was there before. Naming the
+	// notes is the confirmation.
+	if (sweeping && args.inPlace && !args.force) {
+		fail(
+			"Refusing to overwrite every published note at once. Name the notes to pull " +
+				"in place, or pass --force if you really mean the whole vault."
+		);
+	}
 	const files = (
 		sweeping ? await publishedNotes(vault, data) : resolveNotes(vault, args.positional)
 	).filter((file) => !isSidecarPath(file.path));
@@ -610,6 +635,8 @@ async function commandPull(args: Args): Promise<void> {
 	if (!files.length) fail(sweeping ? "No published notes found." : "Name at least one note.");
 
 	const outcomes: PullOutcome[] = [];
+	/** Records whose drift an in-place write has settled. */
+	const reconciled: Record<string, SyncRecord> = {};
 	for (const file of files) {
 		const record = data.sync[file.path];
 		const url = (await vault.frontmatter(file))[data.settings.frontmatterProperty];
@@ -631,30 +658,51 @@ async function commandPull(args: Args): Promise<void> {
 			remoteVersion: remote?.version ?? null,
 			lastPushedVersion,
 			sidecarPath: null,
+			inPlace: false,
 			url: pageId
 				? client.pageUrl(record?.spaceKey ?? data.settings.defaultSpaceKey, pageId)
 				: null,
 		};
 
-		if (remote && (shouldWriteSidecar(state, { sweeping }) || args.force) && !args.dryRun) {
-			outcome.sidecarPath = sidecarPathFor(file.path);
-			await fs.writeFile(
-				path.join(VAULT_ROOT, outcome.sidecarPath),
-				sidecarContents({
-					remote,
-					notePath: file.path,
-					url: outcome.url ?? "",
-					lastPushedVersion,
-					pulledAt,
-				}),
-				"utf8"
-			);
-		} else if (remote && (shouldWriteSidecar(state, { sweeping }) || args.force)) {
-			outcome.sidecarPath = sidecarPathFor(file.path);
+		if (remote && (shouldPull(state, { sweeping }) || args.force)) {
+			if (args.inPlace) {
+				outcome.inPlace = true;
+				if (!args.dryRun) {
+					const notePath = path.join(VAULT_ROOT, file.path);
+					const existing = await fs.readFile(notePath, "utf8");
+					await fs.writeFile(notePath, inPlaceContents({ existing, remote }), "utf8");
+					// The note now holds what Confluence holds, so the drift is settled
+					// and should stop being reported. contentHash is left alone on
+					// purpose: this body renders to different markup than the one last
+					// pushed, and stamping the hash would make the next push skip as a
+					// no-op and leave the page stale. Untracked notes gain no record,
+					// because a pull learns nothing about what was last pushed.
+					if (record) {
+						reconciled[file.path] = { ...record, lastPushedVersion: remote.version };
+					}
+				}
+			} else {
+				outcome.sidecarPath = sidecarPathFor(file.path);
+				if (!args.dryRun) {
+					await fs.writeFile(
+						path.join(VAULT_ROOT, outcome.sidecarPath),
+						sidecarContents({
+							remote,
+							notePath: file.path,
+							url: outcome.url ?? "",
+							lastPushedVersion,
+							pulledAt,
+						}),
+						"utf8"
+					);
+				}
+			}
 		}
 
 		outcomes.push(outcome);
 	}
+
+	if (Object.keys(reconciled).length) await writeSyncState(reconciled);
 
 	if (args.json) {
 		process.stdout.write(JSON.stringify(outcomes, null, 2) + "\n");
@@ -668,7 +716,12 @@ async function commandPull(args: Args): Promise<void> {
 				? ""
 				: `  v${outcome.lastPushedVersion ?? "?"} -> v${outcome.remoteVersion}`;
 		process.stdout.write(`${outcome.state.padEnd(14)} ${outcome.notePath}${versions}\n`);
-		if (outcome.sidecarPath) {
+		if (outcome.inPlace) {
+			written++;
+			process.stdout.write(
+				`${" ".repeat(14)} ${args.dryRun ? "would overwrite" : "overwrote"} ${outcome.notePath}\n`
+			);
+		} else if (outcome.sidecarPath) {
 			written++;
 			process.stdout.write(`${" ".repeat(14)} ${args.dryRun ? "would write" : "wrote"} ${outcome.sidecarPath}\n`);
 		}
@@ -676,8 +729,11 @@ async function commandPull(args: Args): Promise<void> {
 	const drifted = outcomes.filter((o) => o.state === "drifted").length;
 	const untracked = outcomes.filter((o) => o.state === "untracked").length;
 	process.stdout.write(
-		`\n${drifted} drifted, ${written} review ${written === 1 ? "copy" : "copies"} ` +
-			`${args.dryRun ? "would be written" : "written"}\n`
+		args.inPlace
+			? `\n${drifted} drifted, ${written} ${written === 1 ? "note" : "notes"} ` +
+					`${args.dryRun ? "would be overwritten" : "overwritten"}\n`
+			: `\n${drifted} drifted, ${written} review ${written === 1 ? "copy" : "copies"} ` +
+					`${args.dryRun ? "would be written" : "written"}\n`
 	);
 	if (untracked && sweeping) {
 		process.stdout.write(

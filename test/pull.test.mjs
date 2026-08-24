@@ -140,3 +140,92 @@ describe("review copy contents", () => {
 		assert.match(out, /title: "A \\"quoted\\" title \(Confluence copy\)"/);
 	});
 });
+
+describe("splitting a note into frontmatter and body", () => {
+	test("keeps the block and hands back the rest", () => {
+		const { frontmatter, body } = pull.splitFrontmatter(
+			"---\ntitle: Q3\nconfluence: \"https://x\"\n---\n\n## Findings\n\nLocal text.\n"
+		);
+		assert.equal(frontmatter, "---\ntitle: Q3\nconfluence: \"https://x\"\n---\n");
+		assert.equal(body, "\n## Findings\n\nLocal text.\n");
+	});
+
+	test("a note with no frontmatter is all body", () => {
+		const { frontmatter, body } = pull.splitFrontmatter("## Findings\n\nLocal text.\n");
+		assert.equal(frontmatter, "");
+		assert.equal(body, "## Findings\n\nLocal text.\n");
+	});
+
+	test("a horizontal rule further down is not mistaken for a block", () => {
+		const { frontmatter, body } = pull.splitFrontmatter("# Title\n\n---\n\nAfter the rule.\n");
+		assert.equal(frontmatter, "");
+		assert.equal(body, "# Title\n\n---\n\nAfter the rule.\n");
+	});
+
+	test("survives CRLF line endings", () => {
+		const { frontmatter } = pull.splitFrontmatter("---\r\ntitle: Q3\r\n---\r\nBody\r\n");
+		assert.equal(frontmatter, "---\r\ntitle: Q3\r\n---\r\n");
+	});
+});
+
+describe("writing the remote body over a note", () => {
+	const existing =
+		"---\n" +
+		'title: "Q3 Metrics"\n' +
+		"date: 2026-06-01\n" +
+		"type: research\n" +
+		"tags: [metrics]\n" +
+		'confluence: "https://example.atlassian.net/wiki/spaces/DOCS/pages/900"\n' +
+		'confluenceParent: "123456"\n' +
+		"---\n" +
+		"\n## Findings\n\nThe local version of this paragraph.\n";
+
+	const build = (overrides = {}) =>
+		pull.inPlaceContents({ existing, remote: remote(), ...overrides });
+
+	test("carries the remote body", () => {
+		assert.match(build(), /A colleague edited this line\./);
+	});
+
+	test("drops the local body it replaced", () => {
+		assert.ok(!/The local version of this paragraph/.test(build()));
+	});
+
+	test("keeps the page binding, so the note stays publishable", () => {
+		const out = build();
+		assert.match(out, /^confluence: "https:\/\/example\.atlassian\.net\/wiki\/spaces\/DOCS\/pages\/900"$/m);
+		assert.match(out, /^confluenceParent: "123456"$/m);
+	});
+
+	test("keeps every other property untouched", () => {
+		const out = build();
+		for (const line of ['title: "Q3 Metrics"', "date: 2026-06-01", "type: research", "tags: [metrics]"]) {
+			assert.match(out, new RegExp("^" + line.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "$", "m"));
+		}
+	});
+
+	test("narrates nothing about having been pulled", () => {
+		// This lands in a real note, which reads as the current state of the doc.
+		// A "pulled from Confluence at ..." banner would be edit history in the body.
+		const out = build();
+		assert.ok(!/\[!info\]/.test(out));
+		assert.ok(!/[Pp]ulled/.test(out));
+		assert.ok(!/[Rr]eview copy/.test(out));
+		assert.ok(!/confluence-pull/.test(out));
+	});
+
+	test("separates frontmatter from body with a blank line", () => {
+		assert.match(build(), /---\n\n## Answer/);
+	});
+
+	test("a note with no frontmatter becomes just the remote body", () => {
+		const out = pull.inPlaceContents({ existing: "Old text.\n", remote: remote() });
+		assert.equal(out, "## Answer\n\nA colleague edited this line.\n");
+	});
+
+	test("ends with exactly one newline", () => {
+		const out = build({ remote: remote({ markdown: "Body\n\n\n" }) });
+		assert.ok(out.endsWith("Body\n"));
+		assert.ok(!out.endsWith("Body\n\n"));
+	});
+});

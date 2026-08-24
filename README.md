@@ -6,7 +6,7 @@ Publish Obsidian notes to Confluence Cloud. Write in Obsidian, push to Confluenc
 
 Notes are converted to Confluence **storage format**, the XHTML Confluence stores natively, so pages arrive as real Confluence content with working tables, code macros, task lists and panels. Not Markdown pasted into a code block.
 
-Publishing is one-way by design. Confluence is a publishing target rather than a second source of truth, and nothing is merged back automatically. When someone edits a published page directly, the plugin notices and asks before overwriting their work, and `pull` brings their version down beside your note so you can see what changed. Inline comments are re-anchored onto the new content rather than orphaned.
+Publishing is one-way by design. Confluence is a publishing target rather than a second source of truth, and nothing is merged back automatically. When someone edits a published page directly, the plugin notices and asks before overwriting their work, and `pull` brings their version down beside your note so you can see what changed, or over it with `--in-place` once you have decided their version wins. Inline comments are re-anchored onto the new content rather than orphaned.
 
 ## Install
 
@@ -80,11 +80,12 @@ Run it from the vault root. The wrapper finds Node on its own, including one ins
 | `move <note>...` | Refile pages under a new parent, leaving content untouched |
 | `status [<note>...]` | What each note is bound to, and whether it has drifted |
 | `pull [<note>...]` | Save what Confluence holds as a review copy beside each note |
+| `pull <note>... --in-place` | Write what Confluence holds over each note's body |
 | `preview <note>` | Print the storage markup and conversion warnings |
 | `tree [<page>]` | Print the page and folder hierarchy under a page |
 | `mkfolder <title> --parent <id>` | Create a folder, or print the id of one that exists |
 
-Options are `--force`, `--parent <id|url>`, `--dry-run`, `--json` and `--all`.
+Options are `--force`, `--parent <id|url>`, `--dry-run`, `--json`, `--all` and `--in-place`.
 
 The overwrite prompts have no screen to open on, so the CLI declines them and prints the reason. That makes `cancelled` the normal outcome for a page this vault has not published before; re-run with `--force` once you have looked at the page.
 
@@ -137,7 +138,7 @@ After attachments upload, the page version is re-read from Confluence before it 
 
 ## Pulling a page back
 
-`pull` answers "what does Confluence hold now". It never writes over a note. The page is saved as a separate `<note>.confluence.md` review copy beside it, for you to read, copy from, and delete.
+`pull` answers "what does Confluence hold now". By default it leaves your note alone: the page is saved as a separate `<note>.confluence.md` review copy beside it, for you to read, copy from, and delete. Pass `--in-place` when you want it written over the note instead.
 
 ```bash
 .obsidian/plugins/confluence-push/confluence-push pull "Team/Q3 Review.md"
@@ -157,6 +158,24 @@ What gets a copy:
 Review copies carry no `confluence` property, so `push --all` never picks them up and they cannot overwrite the page they came from.
 
 `pull <note> --stdout` prints the page instead, for piping into a diff.
+
+### Writing it over the note instead
+
+Once you have read the review copy and decided the Confluence version wins, `--in-place` saves you the copying:
+
+```bash
+.obsidian/plugins/confluence-push/confluence-push pull "Team/Q3 Review.md" --in-place
+```
+
+In Obsidian the same thing is **Pull Confluence version over current note**, which asks to confirm first.
+
+The note's frontmatter is kept exactly as it was and everything below it is replaced. That is not cosmetic: the `confluence` property is what binds a note to its page, so a wholesale overwrite would quietly unpublish the note on the way past. Nothing is added either, no banner and no pulled-at stamp, because this is a real note and a note reads as the current state of the document rather than a log of what was done to it. The pull report tells you what happened.
+
+Which pages qualify is unchanged: drifted always, untracked only when you name the note, in sync and missing only with `--force`. `--dry-run` reports what it would overwrite. A vault-wide `pull --all --in-place` is refused, because rewriting the body of every drifted note in one unattended pass with no copy of what was there before is not something you do by accident. Name the notes, or pass `--force` if you really mean it.
+
+Afterwards the note stops reporting as drifted, since it now holds what Confluence holds. The next `push` still goes through rather than being skipped as unchanged, because the body you now hold renders to different markup than the one last pushed.
+
+The catch is that this is still a lossy round trip. You get Confluence's re-render, so absolute links, panels in place of callouts and resolved wikilinks land in the note permanently, and pushing afterwards sends that flattened version back. Pull in place when the page is the source of truth for that edit, and read the review copy first when you only want a paragraph of it.
 
 ## Comments
 
@@ -195,7 +214,7 @@ The test suite runs the converter and API client outside Obsidian, using a stub 
 | `src/settings.ts` | Settings model and settings tab |
 | `src/vault.ts` | Frontmatter lookups shared by the pusher and the plugin entry |
 | `src/comments.ts` | Reading inline comment anchors off a page and re-attaching them |
-| `src/pull.ts` | Drift states and the review copy written beside a note |
+| `src/pull.ts` | Drift states, the review copy beside a note, and the in-place overwrite |
 | `src/main.ts` | Plugin entry, commands, menus |
 | `src/cli.ts` | Command-line front end |
 | `src/node/` | Node stand-ins for the Obsidian API the shared modules use |

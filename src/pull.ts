@@ -7,8 +7,13 @@
  * straight over a note it would churn formatting nobody changed and bury the one
  * paragraph a colleague actually edited.
  *
- * So a pull writes a separate review copy beside the note and never touches the
- * note itself. Deciding what to carry across stays a human judgement.
+ * So by default a pull writes a separate review copy beside the note and leaves
+ * the note alone. Deciding what to carry across stays a human judgement.
+ *
+ * `--in-place` is the deliberate exception, for when you have already decided the
+ * Confluence version wins. It replaces the note's body and keeps its frontmatter,
+ * because that block holds the `confluence` property binding the note to its page:
+ * dropped, the note would quietly unpublish itself on the way past.
  */
 
 import { RemoteMarkdown } from "./confluence";
@@ -33,6 +38,8 @@ export interface PullOutcome {
 	lastPushedVersion: number | null;
 	/** Vault path of the review copy, when one was written. */
 	sidecarPath: string | null;
+	/** Whether the remote body was written over the note itself. */
+	inPlace: boolean;
 	url: string | null;
 }
 
@@ -108,10 +115,42 @@ export function sidecarContents(args: {
  * but sweeping the whole vault it would bury the pages that did change under a
  * copy of every page that merely lacks a record.
  */
-export function shouldWriteSidecar(state: PullState, opts: { sweeping: boolean }): boolean {
+export function shouldPull(state: PullState, opts: { sweeping: boolean }): boolean {
 	if (state === "drifted") return true;
 	if (state === "untracked") return !opts.sweeping;
 	return false;
+}
+
+/** Same question, named for the default destination. */
+export function shouldWriteSidecar(state: PullState, opts: { sweeping: boolean }): boolean {
+	return shouldPull(state, opts);
+}
+
+/**
+ * Splits a note into its leading YAML block and everything after it.
+ *
+ * The block is returned verbatim, closing delimiter and line ending included, so
+ * it can be put back exactly as it was found. Anchored at the start of the file,
+ * so a `---` horizontal rule further down is body text, not a delimiter.
+ */
+export function splitFrontmatter(contents: string): { frontmatter: string; body: string } {
+	if (!contents.startsWith("---")) return { frontmatter: "", body: contents };
+	const match = /^---\r?\n[\s\S]*?\r?\n---[ \t]*(\r?\n|$)/.exec(contents);
+	if (!match) return { frontmatter: "", body: contents };
+	return { frontmatter: match[0], body: contents.slice(match[0].length) };
+}
+
+/**
+ * The note's contents once the Confluence body has been written over it.
+ *
+ * Deliberately carries no banner saying where the text came from or when. This
+ * is a real note, and a note reads as the current state of the document, not as
+ * a log of what was done to it. The pull report says what happened instead.
+ */
+export function inPlaceContents(args: { existing: string; remote: RemoteMarkdown }): string {
+	const { frontmatter } = splitFrontmatter(args.existing);
+	const body = args.remote.markdown.trimEnd() + "\n";
+	return frontmatter ? `${frontmatter}\n${body}` : body;
 }
 
 export function pullState(args: {

@@ -10,7 +10,7 @@ import {
 } from "./settings";
 import { SyncRecord } from "./types";
 import { frontmatterString } from "./vault";
-import { sidecarContents, sidecarPathFor } from "./pull";
+import { inPlaceContents, sidecarContents, sidecarPathFor } from "./pull";
 import { pageIdFromUrl } from "./confluence";
 
 /** Shows the generated storage markup so conversion issues can be inspected. */
@@ -49,6 +49,56 @@ class PreviewModal extends Modal {
 
 	onClose(): void {
 		this.contentEl.empty();
+	}
+}
+
+/**
+ * Asks before a pull writes over a note.
+ *
+ * Overwriting is the one thing this plugin does that loses local text, and
+ * Obsidian's editor undo does not reach a change made through the vault API,
+ * so the only way back is Obsidian's file recovery. That is worth a click.
+ */
+class ConfirmOverwriteModal extends Modal {
+	private confirmed = false;
+
+	constructor(
+		app: import("obsidian").App,
+		private readonly noteName: string,
+		private readonly remoteVersion: number,
+		private readonly onConfirm: () => void
+	) {
+		super(app);
+	}
+
+	onOpen(): void {
+		const { contentEl } = this;
+		contentEl.createEl("h2", { text: `Overwrite "${this.noteName}"?` });
+		contentEl.createEl("p", {
+			text:
+				`Version ${this.remoteVersion} of the Confluence page will replace this note's body. ` +
+				"Its frontmatter is kept, everything below it is not.",
+		});
+		contentEl.createEl("p", {
+			text:
+				"The page comes back as Confluence renders it, so absolute links and panels " +
+				"land in the note permanently, and a later push sends that version back.",
+		});
+
+		const actions = contentEl.createDiv({ cls: "confluence-push-actions" });
+		const cancel = actions.createEl("button", { text: "Cancel" });
+		cancel.addEventListener("click", () => this.close());
+		const confirm = actions.createEl("button", { text: "Overwrite note", cls: "mod-warning" });
+		confirm.addEventListener("click", () => {
+			this.confirmed = true;
+			this.close();
+		});
+		confirm.focus();
+	}
+
+	onClose(): void {
+		this.contentEl.empty();
+		if (this.confirmed) this.onConfirm();
 	}
 }
 
@@ -123,7 +173,19 @@ export default class ConfluencePushPlugin extends Plugin {
 				const file = this.app.workspace.getActiveFile();
 				if (!file || file.extension !== "md") return false;
 				if (!this.publishedUrl(file)) return false;
-				if (!checking) void this.pullActiveFile();
+				if (!checking) void this.pullActiveFile(false);
+				return true;
+			},
+		});
+
+		this.addCommand({
+			id: "pull-confluence-in-place",
+			name: "Pull Confluence version over current note",
+			checkCallback: (checking) => {
+				const file = this.app.workspace.getActiveFile();
+				if (!file || file.extension !== "md") return false;
+				if (!this.publishedUrl(file)) return false;
+				if (!checking) void this.pullActiveFile(true);
 				return true;
 			},
 		});
@@ -342,13 +404,14 @@ export default class ConfluencePushPlugin extends Plugin {
 	}
 
 	/**
-	 * Saves what Confluence holds as a review copy beside the note.
+	 * Brings what Confluence holds back down, beside the note or over it.
 	 *
-	 * The note is never written over. Confluence renders the Markdown itself, so
-	 * it comes back normalised rather than as the Markdown that was pushed, and
-	 * deciding what to carry across is a judgement the reader has to make.
+	 * Confluence renders the Markdown itself, so a page comes back normalised
+	 * rather than as the Markdown that was pushed. By default that goes in a
+	 * review copy and deciding what to carry across stays with the reader.
+	 * In place, the reader has already decided, and is asked to confirm.
 	 */
-	private async pullActiveFile(): Promise<void> {
+	private async pullActiveFile(inPlace: boolean): Promise<void> {
 		const file = this.app.workspace.getActiveFile();
 		if (!file || file.extension !== "md") return;
 
@@ -369,6 +432,31 @@ export default class ConfluencePushPlugin extends Plugin {
 				return;
 			}
 
+			const drift =
+				record && record.lastPushedVersion !== remote.version
+					? `Confluence is at version ${remote.version}, you last pushed ${record.lastPushedVersion}.`
+					: "";
+
+			if (inPlace) {
+				new ConfirmOverwriteModal(this.app, file.basename, remote.version, () => {
+					void (async () => {
+						const existing = await this.app.vault.read(file);
+						await this.app.vault.modify(file, inPlaceContents({ existing, remote }));
+						// The note now holds what Confluence holds, so it should stop
+						// reporting as drifted. contentHash is left alone on purpose: this
+						// body renders to different markup than the one last pushed, and
+						// stamping the hash would make the next push skip as a no-op and
+						// leave the page stale.
+						if (record) {
+							this.data.sync[file.path] = { ...record, lastPushedVersion: remote.version };
+							await this.savePluginData();
+						}
+						new Notice(`Overwrote "${file.basename}" with the Confluence version.`, 8000);
+					})();
+				}).open();
+				return;
+			}
+
 			const target = sidecarPathFor(file.path);
 			const contents = sidecarContents({
 				remote,
@@ -383,10 +471,6 @@ export default class ConfluencePushPlugin extends Plugin {
 			else await this.app.vault.create(target, contents);
 
 			await this.app.workspace.openLinkText(target, "", true);
-			const drift =
-				record && record.lastPushedVersion !== remote.version
-					? `Confluence is at version ${remote.version}, you last pushed ${record.lastPushedVersion}.`
-					: "";
 			new Notice(`Saved a review copy beside the note. ${drift}`.trim(), 8000);
 		} catch (err) {
 			notice.hide();
